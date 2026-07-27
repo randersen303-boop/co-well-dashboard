@@ -415,8 +415,8 @@ function exportCurrentProductionCsv() {
     return `${r[0]}-${String(r[1]).padStart(2, "0")}` >= minPeriod;
   });
 
-  const rows = [["Year", "Month", "Oil (bbl)", "Gas (mcf)", "Water (bbl)"]];
-  for (const r of filtered) rows.push(r);
+  const rows = [["Date", "Oil (bbl)", "Gas (mcf)", "Water (bbl)"]];
+  for (const r of filtered) rows.push([`${r[1]}/1/${r[0]}`, r[2], r[3], r[4]]);
   const csv = rows.map(r => r.join(",")).join("\n");
 
   const blob = new Blob([csv], { type: "text/csv" });

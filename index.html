@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Colorado Well Data Dashboard</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, "Segoe UI", Arial, sans-serif; }
+  #map { position: absolute; top: 0; bottom: 0; left: 0; right: 380px; }
+
+  #sidebar {
+    position: absolute; top: 0; bottom: 0; right: 0; width: 380px;
+    background: #fff; border-left: 1px solid #d8dce1; overflow-y: auto;
+    box-shadow: -2px 0 8px rgba(0,0,0,.06); z-index: 500;
+  }
+  #sidebar-empty { padding: 24px; color: #6b7280; font-size: 14px; }
+  #sidebar-content { display: none; padding: 20px; }
+
+  #status-banner {
+    position: absolute; top: 12px; left: 12px; z-index: 500;
+    background: rgba(255,255,255,.95); padding: 8px 14px; border-radius: 6px;
+    font-size: 13px; color: #374151; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+  }
+
+  h2.well-name { margin: 0 0 2px; font-size: 18px; color: #111827; }
+  .well-sub { color: #6b7280; font-size: 13px; margin-bottom: 16px; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; margin-right: 6px; margin-bottom: 6px;
+  }
+  .badge-producing { background: #dcfce7; color: #166534; }
+  .badge-pa { background: #f3f4f6; color: #4b5563; }
+  .badge-shutin { background: #fef3c7; color: #92400e; }
+  .badge-other { background: #e0e7ff; color: #3730a3; }
+  .badge-hz { background: #dbeafe; color: #1e40af; }
+  .badge-vert { background: #f3f4f6; color: #4b5563; }
+
+  table.detail { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  table.detail td { padding: 5px 0; border-bottom: 1px solid #f1f2f4; vertical-align: top; }
+  table.detail td.label { color: #6b7280; width: 42%; }
+  table.detail td.value { color: #111827; font-weight: 500; text-align: right; }
+
+  .scout-link {
+    display: inline-block; margin-top: 14px; padding: 8px 14px; background: #1f5c99;
+    color: #fff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600;
+  }
+  .scout-link:hover { background: #18486f; }
+
+  #chart-wrap { margin-top: 22px; }
+  #chart-wrap h3 { font-size: 14px; color: #374151; margin: 0 0 8px; }
+  #chart-controls { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 12px; color: #374151; }
+  #date-filter { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d5db; border-radius: 4px; color: #374151; }
+  #export-csv {
+    margin-left: auto; font-size: 12px; padding: 4px 10px; border: 1px solid #d1d5db;
+    border-radius: 4px; background: #fff; color: #374151; cursor: pointer;
+  }
+  #export-csv:hover { background: #f3f4f6; }
+  #chart-status { font-size: 13px; color: #9ca3af; padding: 20px 0; text-align: center; }
+  canvas#prod-chart { max-height: 240px; }
+
+  .legend {
+    position: absolute; bottom: 20px; left: 12px; z-index: 500; background: rgba(255,255,255,.95);
+    padding: 10px 14px; border-radius: 6px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+  }
+  .legend div { display: flex; align-items: center; margin: 2px 0; }
+  .legend span.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .legend span.line { width: 14px; height: 2px; display: inline-block; margin-right: 6px; }
+  .legend hr { border: none; border-top: 1px solid #e5e7eb; margin: 6px 0; }
+
+  #layers-panel {
+    position: absolute; top: 12px; right: 392px; z-index: 500; background: rgba(255,255,255,.97);
+    padding: 10px 14px; border-radius: 6px; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+  }
+  #layers-panel div { display: flex; align-items: center; margin: 3px 0; }
+  #layers-panel label { display: flex; align-items: center; cursor: pointer; }
+  #layers-panel input { margin-right: 6px; }
+  #layers-hint { font-size: 11px; color: #9ca3af; margin-top: 4px; max-width: 200px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="status-banner">Loading wells…</div>
+
+<div id="layers-panel">
+  <div><label><input type="checkbox" id="toggle-wellbores" checked /> Wellbores</label></div>
+  <div id="layers-hint">Wellbore paths appear once you zoom in</div>
+</div>
+
+<div class="legend">
+  <div><span class="dot" style="background:#16a34a"></span>Producing</div>
+  <div><span class="dot" style="background:#9ca3af"></span>Plugged &amp; Abandoned</div>
+  <div><span class="dot" style="background:#d97706"></span>Shut-in</div>
+  <div><span class="dot" style="background:#4338ca"></span>Other</div>
+  <hr />
+  <div><span class="line" style="background:#2563eb"></span>Horizontal wellbore</div>
+  <div><span class="line" style="background:#7c3aed"></span>Directional wellbore</div>
+  <div><span class="line" style="background:#9ca3af"></span>Drifted</div>
+</div>
+
+<div id="sidebar">
+  <div id="sidebar-empty">Click a well on the map to see its header info, ECMC scout card link, and production history.</div>
+  <div id="sidebar-content"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
+<script>
+const STATUS_LABELS = {
+  PR: "Producing", PA: "Plugged & Abandoned", SI: "Shut-in", AL: "Active Location",
+  TA: "Temporarily Abandoned", AP: "Approved Permit", IJ: "Injection", EP: "Expired Permit",
+  AC: "Active", WO: "Waiting on Completion", DG: "Drilling", SO: "Shut-in/Other",
+};
+const CLASS_LABELS = {
+  GW: "Gas Well", OW: "Oil Well", DA: "Dry & Abandoned", LO: "Location Only",
+  CBM: "Coalbed Methane", ERI: "Enhanced Recovery Injection", DSP: "Disposal",
+  STO: "Storage", OBW: "Observation Well", CO2: "CO2 Injection", DM: "Dry Hole - Mechanical",
+  CLA: "Class II Injection", STR: "Stratigraphic Test", HE: "Helium",
+};
+
+function statusColor(status) {
+  if (status === "PR" || status === "AC") return "#16a34a";
+  if (status === "PA") return "#9ca3af";
+  if (status === "SI" || status === "SO") return "#d97706";
+  return "#4338ca";
+}
+function statusBadgeClass(status) {
+  if (status === "PR" || status === "AC") return "badge-producing";
+  if (status === "PA") return "badge-pa";
+  if (status === "SI" || status === "SO") return "badge-shutin";
+  return "badge-other";
+}
+function formatApi(api) {
+  return `05-${api.slice(0,3)}-${api.slice(3,8)}`;
+}
+function scoutCardUrl(api) {
+  return `https://ecmc.state.co.us/cogisdb/Facility/FacilityDetail?api=${api}`;
+}
+
+const map = L.map("map", { preferCanvas: true }).setView([39.5, -105.3], 7);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  maxZoom: 19,
+}).addTo(map);
+
+// Plain layer group, no clustering -- every well is its own small dot at every zoom
+// level. Canvas rendering (preferCanvas above) keeps this fast even at 75K+ points.
+const wellsLayer = L.layerGroup();
+
+// Wellbore paths are only added to the map once zoomed in -- 37,795 lines drawn
+// statewide would just be visual noise (and match ECMC's own map, where Wellbores
+// is a toggleable overlay rather than always-on).
+const WELLBORE_MIN_ZOOM = 11;
+const wellboreLayer = L.layerGroup();
+let wellboresEnabled = true;
+
+function deviationColor(deviation) {
+  if (deviation === "Horizontal") return "#2563eb";
+  if (deviation === "Directional") return "#7c3aed";
+  if (deviation === "Drifted") return "#9ca3af";
+  return "#6b7280";
+}
+
+let WELLS_BY_API = {};
+const productionCache = {};
+let prodChart = null;
+
+fetch("data/wells.json")
+  .then(r => r.json())
+  .then(data => {
+    const cols = data.columns;
+    const idx = Object.fromEntries(cols.map((c, i) => [c, i]));
+    const markers = [];
+
+    for (const row of data.wells) {
+      const api = row[idx.api];
+      WELLS_BY_API[api] = row;
+      const lat = row[idx.latitude], lon = row[idx.longitude];
+      if (lat == null || lon == null) continue;
+
+      const marker = L.circleMarker([lat, lon], {
+        radius: 4,
+        color: statusColor(row[idx.facility_status]),
+        fillColor: statusColor(row[idx.facility_status]),
+        fillOpacity: 0.85,
+        weight: 1,
+      });
+      marker.wellApi = api;
+      marker.on("click", () => showWell(api));
+      markers.push(marker);
+    }
+
+    for (const m of markers) m.addTo(wellsLayer);
+    map.addLayer(wellsLayer);
+    document.getElementById("status-banner").textContent = `${markers.length.toLocaleString()} wells loaded`;
+    setTimeout(() => { document.getElementById("status-banner").style.display = "none"; }, 3000);
+  })
+  .catch(err => {
+    document.getElementById("status-banner").textContent = "Failed to load well data: " + err;
+  });
+
+fetch("data/directional_lines.json")
+  .then(r => r.json())
+  .then(data => {
+    for (const [api, info] of Object.entries(data)) {
+      const color = deviationColor(info.deviation);
+      for (const path of info.paths) {
+        // The visible line is only 2.5px wide -- far too thin to reliably hit with a
+        // real mouse click. Stack an invisible, much wider line underneath purely for
+        // click hit-testing (a standard Leaflet technique, since Canvas-rendered
+        // polylines don't have a separate "hit tolerance" option from their weight).
+        const hitLine = L.polyline(path, { color, weight: 16, opacity: 0 });
+        hitLine.on("click", () => showWell(api));
+        hitLine.addTo(wellboreLayer);
+
+        const line = L.polyline(path, { color, weight: 2.5, opacity: 0.8, interactive: false });
+        line.addTo(wellboreLayer);
+      }
+    }
+    updateWellboreVisibility();
+  })
+  .catch(() => { /* wellbore paths are a visual enhancement, fine to skip on failure */ });
+
+function updateWellboreVisibility() {
+  const shouldShow = wellboresEnabled && map.getZoom() >= WELLBORE_MIN_ZOOM;
+  const has = map.hasLayer(wellboreLayer);
+  if (shouldShow && !has) map.addLayer(wellboreLayer);
+  if (!shouldShow && has) map.removeLayer(wellboreLayer);
+  document.getElementById("layers-hint").style.display = (wellboresEnabled && !shouldShow) ? "block" : "none";
+}
+map.on("zoomend", updateWellboreVisibility);
+document.getElementById("toggle-wellbores").addEventListener("change", (e) => {
+  wellboresEnabled = e.target.checked;
+  updateWellboreVisibility();
+});
+
+function idxOf(cols) { return Object.fromEntries(cols.map((c, i) => [c, i])); }
+const WELL_COLS = ["api","well_name","well_num","operator","field_name","well_class","facility_status","spud_date","latitude","longitude","max_md","max_tvd","hz"];
+const WI = idxOf(WELL_COLS);
+
+function showWell(api) {
+  const row = WELLS_BY_API[api];
+  if (!row) return;
+
+  document.getElementById("sidebar-empty").style.display = "none";
+  const content = document.getElementById("sidebar-content");
+  content.style.display = "block";
+
+  const status = row[WI.facility_status];
+  const wellClass = row[WI.well_class];
+  const hz = row[WI.hz];
+  const hzLabel = hz === "Horizontal" ? "Horizontal" : (hz ? hz : "Vertical");
+
+  content.innerHTML = `
+    <h2 class="well-name">${row[WI.well_name] || "(unnamed)"} ${row[WI.well_num] || ""}</h2>
+    <div class="well-sub">${row[WI.operator] || "Unknown operator"}</div>
+    <div>
+      <span class="badge ${statusBadgeClass(status)}">${STATUS_LABELS[status] || status || "Unknown status"}</span>
+      <span class="badge ${hz === "Horizontal" ? "badge-hz" : "badge-vert"}">${hzLabel}</span>
+    </div>
+    <table class="detail">
+      <tr><td class="label">API Number</td><td class="value">${formatApi(api)}</td></tr>
+      <tr><td class="label">Field</td><td class="value">${row[WI.field_name] || "—"}</td></tr>
+      <tr><td class="label">Well Class</td><td class="value">${CLASS_LABELS[wellClass] || wellClass || "—"}</td></tr>
+      <tr><td class="label">Spud Date</td><td class="value">${row[WI.spud_date] || "—"}</td></tr>
+      <tr><td class="label">Measured Depth</td><td class="value">${row[WI.max_md] ? row[WI.max_md].toLocaleString() + " ft" : "—"}</td></tr>
+      <tr><td class="label">True Vertical Depth</td><td class="value">${row[WI.max_tvd] ? row[WI.max_tvd].toLocaleString() + " ft" : "—"}</td></tr>
+    </table>
+    <a class="scout-link" href="${scoutCardUrl(api)}" target="_blank" rel="noopener">View ECMC Well Scout Card &rarr;</a>
+
+    <div id="chart-wrap">
+      <h3>Monthly Production</h3>
+      <div id="chart-controls">
+        <label for="date-filter">Since</label>
+        <input type="number" id="date-filter" min="${EARLIEST_YEAR}" max="${new Date().getFullYear()}" placeholder="Year" style="width:70px" />
+        <button id="export-csv" type="button">Export CSV</button>
+      </div>
+      <div id="chart-status">Loading production history…</div>
+      <canvas id="prod-chart" style="display:none"></canvas>
+    </div>
+  `;
+
+  currentApi = api;
+
+  document.getElementById("date-filter").value = minYear;
+  document.getElementById("date-filter").addEventListener("change", (e) => {
+    const year = e.target.value;
+    minYear = year;
+    minPeriod = year ? `${year}-01` : ""; // always January 1st of the entered year
+    renderChart(currentSeries);
+  });
+  document.getElementById("export-csv").addEventListener("click", exportCurrentProductionCsv);
+
+  loadProduction(api);
+}
+
+const N_BUCKETS = 128;
+const EARLIEST_YEAR = 1999;
+let minYear = ""; // "" = show all history (the default); persists as you click between wells
+let minPeriod = "";
+let currentSeries = null;
+let currentApi = null;
+
+function exportCurrentProductionCsv() {
+  if (!currentApi || !currentSeries || currentSeries.length === 0) return;
+  const filtered = currentSeries.filter(r => {
+    if (!minPeriod) return true;
+    return `${r[0]}-${String(r[1]).padStart(2, "0")}` >= minPeriod;
+  });
+
+  const rows = [["Year", "Month", "Oil (bbl)", "Gas (mcf)", "Water (bbl)"]];
+  for (const r of filtered) rows.push(r);
+  const csv = rows.map(r => r.join(",")).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${formatApi(currentApi)}_production.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadProduction(api) {
+  const bucket = Number(api) % N_BUCKETS;
+  try {
+    if (!productionCache[bucket]) {
+      const resp = await fetch(`data/production/${bucket}.json`);
+      productionCache[bucket] = resp.ok ? await resp.json() : {};
+    }
+    currentSeries = productionCache[bucket][api] || null;
+    renderChart(currentSeries);
+  } catch (err) {
+    document.getElementById("chart-status").textContent = "Could not load production data.";
+  }
+}
+
+function renderChart(series) {
+  const statusEl = document.getElementById("chart-status");
+  const canvas = document.getElementById("prod-chart");
+  const filtered = (series || []).filter(r => {
+    if (!minPeriod) return true;
+    const period = `${r[0]}-${String(r[1]).padStart(2, "0")}`;
+    return period >= minPeriod;
+  });
+  if (filtered.length === 0) {
+    statusEl.textContent = series && series.length ? "No production on/after the selected date." : "No reported production for this well.";
+    statusEl.style.display = "block";
+    canvas.style.display = "none";
+    return;
+  }
+  statusEl.style.display = "none";
+  canvas.style.display = "block";
+
+  const labels = filtered.map(r => `${r[0]}-${String(r[1]).padStart(2, "0")}`);
+  const oil = filtered.map(r => r[2]);
+  const gas = filtered.map(r => r[3]);
+  const water = filtered.map(r => r[4]);
+
+  if (prodChart) prodChart.destroy();
+  prodChart = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Oil (bbl)", data: oil, borderColor: "#16a34a", backgroundColor: "transparent", pointRadius: 0, borderWidth: 1.5, yAxisID: "y" },
+        { label: "Gas (mcf)", data: gas, borderColor: "#dc2626", backgroundColor: "transparent", pointRadius: 0, borderWidth: 1.5, yAxisID: "y1" },
+        { label: "Water (bbl)", data: water, borderColor: "#2563eb", backgroundColor: "transparent", pointRadius: 0, borderWidth: 1.5, yAxisID: "y" },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        y: { position: "left", title: { display: true, text: "Oil / Water (bbl)", font: { size: 10 } } },
+        y1: { position: "right", title: { display: true, text: "Gas (mcf)", font: { size: 10 } }, grid: { drawOnChartArea: false } },
+      },
+      plugins: { legend: { labels: { font: { size: 11 } } } },
+    },
+  });
+}
+</script>
+</body>
+</html>

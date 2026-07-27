@@ -56,16 +56,11 @@ DJ_BASIN_COUNTIES = {
     "005",  # ARAPAHOE
     "013",  # BOULDER
     "014",  # BROOMFIELD
-    "031",  # DENVER
-    "035",  # DOUGLAS
     "039",  # ELBERT
     "069",  # LARIMER
-    "075",  # LOGAN
-    "087",  # MORGAN
-    "095",  # PHILLIPS
-    "115",  # SEDGWICK
-    "121",  # WASHINGTON
-    "125",  # YUMA
+    # Denver, Douglas, Logan, Morgan, Phillips, Sedgwick, Washington, and Yuma were
+    # dropped at Randy's request -- sparse eastern-plains/conventional well activity,
+    # not core DJ Basin/Wattenberg.
 }
 
 WELL_COLUMNS = [

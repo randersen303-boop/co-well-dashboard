@@ -32,10 +32,10 @@
     display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
     font-weight: 600; margin-right: 6px; margin-bottom: 6px;
   }
-  .badge-producing { background: #dcfce7; color: #166534; }
-  .badge-pa { background: #f3f4f6; color: #4b5563; }
-  .badge-shutin { background: #fef3c7; color: #92400e; }
-  .badge-other { background: #e0e7ff; color: #3730a3; }
+  .badge-permit { background: #dcfce7; color: #166534; }
+  .badge-drilling { background: #ede9fe; color: #4c1d95; }
+  .badge-producing { background: #f3e8ff; color: #6b21a8; }
+  .badge-other { background: #f3f4f6; color: #4b5563; }
   .badge-hz { background: #dbeafe; color: #1e40af; }
   .badge-vert { background: #f3f4f6; color: #4b5563; }
 
@@ -67,9 +67,16 @@
     padding: 10px 14px; border-radius: 6px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
   }
   .legend div { display: flex; align-items: center; margin: 2px 0; }
-  .legend span.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-  .legend span.line { width: 14px; height: 2px; display: inline-block; margin-right: 6px; }
+  .legend span.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; }
+  .legend span.line { width: 14px; height: 2px; display: inline-block; margin-right: 6px; flex-shrink: 0; }
   .legend hr { border: none; border-top: 1px solid #e5e7eb; margin: 6px 0; }
+  .legend-item {
+    cursor: pointer; user-select: none; padding: 2px 4px; margin: 0 -4px; border-radius: 4px;
+  }
+  .legend-item:hover { background: #f3f4f6; }
+  .legend-item.off { opacity: 0.4; }
+  .legend-item.off span.dot { background: transparent !important; border: 1.5px solid currentColor; }
+  #status-legend-hint { font-size: 10px; color: #9ca3af; margin-top: 2px; }
 
   #layers-panel {
     position: absolute; top: 12px; right: 392px; z-index: 500; background: rgba(255,255,255,.97);
@@ -89,13 +96,12 @@
 <div id="layers-panel">
   <div><label><input type="checkbox" id="toggle-wellbores" checked /> Wellbores</label></div>
   <div id="layers-hint">Wellbore paths appear once you zoom in</div>
+  <div><label><input type="checkbox" id="toggle-plss" checked /> PLSS grid</label></div>
 </div>
 
 <div class="legend">
-  <div><span class="dot" style="background:#16a34a"></span>Producing</div>
-  <div><span class="dot" style="background:#9ca3af"></span>Plugged &amp; Abandoned</div>
-  <div><span class="dot" style="background:#d97706"></span>Shut-in</div>
-  <div><span class="dot" style="background:#4338ca"></span>Other</div>
+  <div id="status-legend"></div>
+  <div id="status-legend-hint">Click to filter</div>
   <hr />
   <div><span class="line" style="background:#2563eb"></span>Horizontal wellbore</div>
   <div><span class="line" style="background:#7c3aed"></span>Directional wellbore</div>
@@ -108,6 +114,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 
 <script>
@@ -123,17 +130,26 @@ const CLASS_LABELS = {
   CLA: "Class II Injection", STR: "Stratigraphic Test", HE: "Helium",
 };
 
+// Well-status color/filter categories -- drives marker color, the sidebar badge, and
+// the clickable legend filter all from one place.
+const STATUS_CATEGORIES = {
+  permit: { label: "Active Permit", color: "#16a34a", badgeClass: "badge-permit" },
+  drilling: { label: "Waiting on Completion / Drilling", color: "#5b21b6", badgeClass: "badge-drilling" },
+  producing: { label: "Producing", color: "#a78bfa", badgeClass: "badge-producing" },
+  other: { label: "Other", color: "#9ca3af", badgeClass: "badge-other" },
+};
+
+function categoryForStatus(status) {
+  if (status === "AP") return "permit";
+  if (status === "WO" || status === "DG") return "drilling";
+  if (status === "PR" || status === "AC") return "producing";
+  return "other";
+}
 function statusColor(status) {
-  if (status === "PR" || status === "AC") return "#16a34a";
-  if (status === "PA") return "#9ca3af";
-  if (status === "SI" || status === "SO") return "#d97706";
-  return "#4338ca";
+  return STATUS_CATEGORIES[categoryForStatus(status)].color;
 }
 function statusBadgeClass(status) {
-  if (status === "PR" || status === "AC") return "badge-producing";
-  if (status === "PA") return "badge-pa";
-  if (status === "SI" || status === "SO") return "badge-shutin";
-  return "badge-other";
+  return STATUS_CATEGORIES[categoryForStatus(status)].badgeClass;
 }
 function formatApi(api) {
   return `05-${api.slice(0,3)}-${api.slice(3,8)}`;
@@ -148,9 +164,28 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
   maxZoom: 19,
 }).addTo(map);
 
-// Plain layer group, no clustering -- every well is its own small dot at every zoom
-// level. Canvas rendering (preferCanvas above) keeps this fast even at 75K+ points.
-const wellsLayer = L.layerGroup();
+// BLM's national PLSS (township/range/section) grid, rendered by Esri's own server --
+// there's no CO-specific ECMC download for this, so it's pulled live rather than
+// bundled into wells.json. Layers 1/2 = PLSS Township / PLSS Section.
+const plssLayer = L.esri.dynamicMapLayer({
+  url: "https://gis.blm.gov/arcgis/rest/services/Cadastral/BLM_Natl_PLSS_CadNSDI/MapServer",
+  layers: [1, 2],
+  opacity: 0.55,
+  minZoom: 10,
+});
+plssLayer.addTo(map);
+document.getElementById("toggle-plss").addEventListener("change", (e) => {
+  if (e.target.checked) map.addLayer(plssLayer);
+  else map.removeLayer(plssLayer);
+});
+
+// One layer group per status category (see STATUS_CATEGORIES) -- no clustering, every
+// well is its own small dot at every zoom level (canvas rendering keeps this fast even
+// at 75K+ points), and each group can be toggled independently by clicking the legend.
+const categoryLayers = {};
+for (const key of Object.keys(STATUS_CATEGORIES)) {
+  categoryLayers[key] = L.layerGroup().addTo(map);
+}
 
 // Wellbore paths are only added to the map once zoomed in -- 37,795 lines drawn
 // statewide would just be visual noise (and match ECMC's own map, where Wellbores
@@ -175,7 +210,7 @@ fetch("data/wells.json")
   .then(data => {
     const cols = data.columns;
     const idx = Object.fromEntries(cols.map((c, i) => [c, i]));
-    const markers = [];
+    let count = 0;
 
     for (const row of data.wells) {
       const api = row[idx.api];
@@ -183,26 +218,43 @@ fetch("data/wells.json")
       const lat = row[idx.latitude], lon = row[idx.longitude];
       if (lat == null || lon == null) continue;
 
+      const category = categoryForStatus(row[idx.facility_status]);
+      const color = STATUS_CATEGORIES[category].color;
       const marker = L.circleMarker([lat, lon], {
         radius: 4,
-        color: statusColor(row[idx.facility_status]),
-        fillColor: statusColor(row[idx.facility_status]),
+        color,
+        fillColor: color,
         fillOpacity: 0.85,
         weight: 1,
       });
       marker.wellApi = api;
       marker.on("click", () => showWell(api));
-      markers.push(marker);
+      marker.addTo(categoryLayers[category]);
+      count++;
     }
 
-    for (const m of markers) m.addTo(wellsLayer);
-    map.addLayer(wellsLayer);
-    document.getElementById("status-banner").textContent = `${markers.length.toLocaleString()} wells loaded`;
+    document.getElementById("status-banner").textContent = `${count.toLocaleString()} wells loaded`;
     setTimeout(() => { document.getElementById("status-banner").style.display = "none"; }, 3000);
   })
   .catch(err => {
     document.getElementById("status-banner").textContent = "Failed to load well data: " + err;
   });
+
+// Legend doubles as a filter: click an item to show/hide that status category.
+const statusLegendEl = document.getElementById("status-legend");
+for (const [key, cat] of Object.entries(STATUS_CATEGORIES)) {
+  const item = document.createElement("div");
+  item.className = "legend-item";
+  item.dataset.category = key;
+  item.innerHTML = `<span class="dot" style="background:${cat.color};color:${cat.color}"></span>${cat.label}`;
+  item.addEventListener("click", () => {
+    const layer = categoryLayers[key];
+    const isOn = map.hasLayer(layer);
+    if (isOn) map.removeLayer(layer); else map.addLayer(layer);
+    item.classList.toggle("off", isOn);
+  });
+  statusLegendEl.appendChild(item);
+}
 
 fetch("data/directional_lines.json")
   .then(r => r.json())

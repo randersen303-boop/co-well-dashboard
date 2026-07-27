@@ -35,7 +35,9 @@
   .badge-permit { background: #dcfce7; color: #166534; }
   .badge-drilling { background: #ede9fe; color: #4c1d95; }
   .badge-producing { background: #f3e8ff; color: #6b21a8; }
-  .badge-other { background: #f3f4f6; color: #4b5563; }
+  .badge-shutin { background: #fef3c7; color: #92400e; }
+  .badge-pa { background: #e5e7eb; color: #374151; }
+  .badge-other { background: #f3f4f6; color: #6b7280; }
   .badge-hz { background: #dbeafe; color: #1e40af; }
   .badge-vert { background: #f3f4f6; color: #4b5563; }
 
@@ -94,6 +96,7 @@
 <div id="status-banner">Loading wells…</div>
 
 <div id="layers-panel">
+  <div><label><input type="checkbox" id="toggle-vertical" checked /> Vertical</label></div>
   <div><label><input type="checkbox" id="toggle-wellbores" checked /> Wellbores</label></div>
   <div id="layers-hint">Wellbore paths appear once you zoom in</div>
   <div><label><input type="checkbox" id="toggle-plss" checked /> PLSS grid</label></div>
@@ -101,11 +104,7 @@
 
 <div class="legend">
   <div id="status-legend"></div>
-  <div id="status-legend-hint">Click to filter</div>
-  <hr />
-  <div><span class="line" style="background:#2563eb"></span>Horizontal wellbore</div>
-  <div><span class="line" style="background:#7c3aed"></span>Directional wellbore</div>
-  <div><span class="line" style="background:#9ca3af"></span>Drifted</div>
+  <div id="status-legend-hint">Click to filter (wells + wellbore lines both colored by status)</div>
 </div>
 
 <div id="sidebar">
@@ -130,19 +129,23 @@ const CLASS_LABELS = {
   CLA: "Class II Injection", STR: "Stratigraphic Test", HE: "Helium",
 };
 
-// Well-status color/filter categories -- drives marker color, the sidebar badge, and
-// the clickable legend filter all from one place.
+// Well-status color/filter categories -- drives marker color, wellbore line color, the
+// sidebar badge, and the clickable legend filter all from one place.
 const STATUS_CATEGORIES = {
   permit: { label: "Active Permit", color: "#16a34a", badgeClass: "badge-permit" },
   drilling: { label: "Waiting on Completion / Drilling", color: "#5b21b6", badgeClass: "badge-drilling" },
   producing: { label: "Producing", color: "#a78bfa", badgeClass: "badge-producing" },
-  other: { label: "Other", color: "#9ca3af", badgeClass: "badge-other" },
+  shutin: { label: "Shut-in / Temp. Abandoned", color: "#d97706", badgeClass: "badge-shutin" },
+  pa: { label: "Plugged & Abandoned", color: "#6b7280", badgeClass: "badge-pa" },
+  other: { label: "Other", color: "#d1d5db", badgeClass: "badge-other" },
 };
 
 function categoryForStatus(status) {
   if (status === "AP") return "permit";
   if (status === "WO" || status === "DG") return "drilling";
   if (status === "PR" || status === "AC") return "producing";
+  if (status === "SI" || status === "TA") return "shutin";
+  if (status === "PA") return "pa";
   return "other";
 }
 function statusColor(status) {
@@ -179,13 +182,43 @@ document.getElementById("toggle-plss").addEventListener("change", (e) => {
   else map.removeLayer(plssLayer);
 });
 
-// One layer group per status category (see STATUS_CATEGORIES) -- no clustering, every
-// well is its own small dot at every zoom level (canvas rendering keeps this fast even
-// at 75K+ points), and each group can be toggled independently by clicking the legend.
+function idxOf(cols) { return Object.fromEntries(cols.map((c, i) => [c, i])); }
+const WELL_COLS = ["api","well_name","well_num","operator","field_name","well_class","facility_status","spud_date","latitude","longitude","max_md","max_tvd","hz"];
+const WI = idxOf(WELL_COLS);
+
+// Two independent filter dimensions: status category (legend clicks) and
+// horizontal-vs-not (the Vertical checkbox). Each status category gets its own pair of
+// layer groups so both filters can be toggled independently without re-scanning all
+// 75K+ wells on every click. isHorizontal(row) treats anything not explicitly tagged
+// "Horizontal" in ECMC's directional survey data as non-horizontal (plain vertical
+// wells have no survey on file at all, so absence also means non-horizontal).
+function isHorizontal(row) { return row[WI.hz] === "Horizontal"; }
+
 const categoryLayers = {};
 for (const key of Object.keys(STATUS_CATEGORIES)) {
-  categoryLayers[key] = L.layerGroup().addTo(map);
+  categoryLayers[key] = { horizontal: L.layerGroup(), nonHorizontal: L.layerGroup() };
 }
+let visibleCategories = new Set(Object.keys(STATUS_CATEGORIES));
+let verticalEnabled = true;
+
+function updateMarkerVisibility() {
+  for (const [key, sub] of Object.entries(categoryLayers)) {
+    const catVisible = visibleCategories.has(key);
+    setLayerVisible(sub.horizontal, catVisible);
+    setLayerVisible(sub.nonHorizontal, catVisible && verticalEnabled);
+  }
+}
+function setLayerVisible(layer, visible) {
+  const has = map.hasLayer(layer);
+  if (visible && !has) map.addLayer(layer);
+  if (!visible && has) map.removeLayer(layer);
+}
+updateMarkerVisibility();
+
+document.getElementById("toggle-vertical").addEventListener("change", (e) => {
+  verticalEnabled = e.target.checked;
+  updateMarkerVisibility();
+});
 
 // Wellbore paths are only added to the map once zoomed in -- 37,795 lines drawn
 // statewide would just be visual noise (and match ECMC's own map, where Wellbores
@@ -194,18 +227,11 @@ const WELLBORE_MIN_ZOOM = 11;
 const wellboreLayer = L.layerGroup();
 let wellboresEnabled = true;
 
-function deviationColor(deviation) {
-  if (deviation === "Horizontal") return "#2563eb";
-  if (deviation === "Directional") return "#7c3aed";
-  if (deviation === "Drifted") return "#9ca3af";
-  return "#6b7280";
-}
-
 let WELLS_BY_API = {};
 const productionCache = {};
 let prodChart = null;
 
-fetch("data/wells.json")
+const wellsLoaded = fetch("data/wells.json")
   .then(r => r.json())
   .then(data => {
     const cols = data.columns;
@@ -229,7 +255,7 @@ fetch("data/wells.json")
       });
       marker.wellApi = api;
       marker.on("click", () => showWell(api));
-      marker.addTo(categoryLayers[category]);
+      marker.addTo(isHorizontal(row) ? categoryLayers[category].horizontal : categoryLayers[category].nonHorizontal);
       count++;
     }
 
@@ -240,7 +266,8 @@ fetch("data/wells.json")
     document.getElementById("status-banner").textContent = "Failed to load well data: " + err;
   });
 
-// Legend doubles as a filter: click an item to show/hide that status category.
+// Legend doubles as a filter: click an item to show/hide that status category (both the
+// surface dots and the wellbore lines, since both share this same color/category now).
 const statusLegendEl = document.getElementById("status-legend");
 for (const [key, cat] of Object.entries(STATUS_CATEGORIES)) {
   const item = document.createElement("div");
@@ -248,19 +275,24 @@ for (const [key, cat] of Object.entries(STATUS_CATEGORIES)) {
   item.dataset.category = key;
   item.innerHTML = `<span class="dot" style="background:${cat.color};color:${cat.color}"></span>${cat.label}`;
   item.addEventListener("click", () => {
-    const layer = categoryLayers[key];
-    const isOn = map.hasLayer(layer);
-    if (isOn) map.removeLayer(layer); else map.addLayer(layer);
-    item.classList.toggle("off", isOn);
+    const nowVisible = !visibleCategories.has(key);
+    if (nowVisible) visibleCategories.add(key); else visibleCategories.delete(key);
+    item.classList.toggle("off", !nowVisible);
+    updateMarkerVisibility();
   });
   statusLegendEl.appendChild(item);
 }
 
-fetch("data/directional_lines.json")
+// Wellbore lines are colored by the well's status (same categories/colors as the
+// surface dots), not by their Horizontal/Directional/Drifted survey classification --
+// so this waits on wells.json to know each API's status before drawing any lines.
+wellsLoaded.then(() => fetch("data/directional_lines.json"))
   .then(r => r.json())
   .then(data => {
     for (const [api, info] of Object.entries(data)) {
-      const color = deviationColor(info.deviation);
+      const row = WELLS_BY_API[api];
+      const category = row ? categoryForStatus(row[WI.facility_status]) : "other";
+      const color = STATUS_CATEGORIES[category].color;
       for (const path of info.paths) {
         // The visible line is only 2.5px wide -- far too thin to reliably hit with a
         // real mouse click. Stack an invisible, much wider line underneath purely for
@@ -290,10 +322,6 @@ document.getElementById("toggle-wellbores").addEventListener("change", (e) => {
   wellboresEnabled = e.target.checked;
   updateWellboreVisibility();
 });
-
-function idxOf(cols) { return Object.fromEntries(cols.map((c, i) => [c, i])); }
-const WELL_COLS = ["api","well_name","well_num","operator","field_name","well_class","facility_status","spud_date","latitude","longitude","max_md","max_tvd","hz"];
-const WI = idxOf(WELL_COLS);
 
 function showWell(api) {
   const row = WELLS_BY_API[api];

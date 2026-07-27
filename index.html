@@ -167,6 +167,13 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
   maxZoom: 19,
 }).addTo(map);
 
+// Wellbore lines get their own pane, stacked above the default overlayPane (z-index
+// 400) where the well-dot circleMarkers live. This guarantees lines always render on
+// top structurally -- no need to re-sort ~46K individual layers after every toggle,
+// which is what bringToFront() per-layer was doing (and it was slow: 500ms+ per click).
+map.createPane("wellborePane");
+map.getPane("wellborePane").style.zIndex = 450;
+
 // BLM's national PLSS (township/range/section) grid, rendered by Esri's own server --
 // there's no CO-specific ECMC download for this, so it's pulled live rather than
 // bundled into wells.json. Layers 1/2 = PLSS Township / PLSS Section.
@@ -201,6 +208,13 @@ for (const key of Object.keys(STATUS_CATEGORIES)) {
 let visibleCategories = new Set(Object.keys(STATUS_CATEGORIES));
 let verticalEnabled = true;
 
+// Wellbore paths are only added to the map once zoomed in -- 37,795 lines drawn
+// statewide would just be visual noise (and match ECMC's own map, where Wellbores
+// is a toggleable overlay rather than always-on).
+const WELLBORE_MIN_ZOOM = 11;
+const wellboreLayer = L.layerGroup();
+let wellboresEnabled = true;
+
 function updateMarkerVisibility() {
   for (const [key, sub] of Object.entries(categoryLayers)) {
     const catVisible = visibleCategories.has(key);
@@ -219,13 +233,6 @@ document.getElementById("toggle-vertical").addEventListener("change", (e) => {
   verticalEnabled = e.target.checked;
   updateMarkerVisibility();
 });
-
-// Wellbore paths are only added to the map once zoomed in -- 37,795 lines drawn
-// statewide would just be visual noise (and match ECMC's own map, where Wellbores
-// is a toggleable overlay rather than always-on).
-const WELLBORE_MIN_ZOOM = 11;
-const wellboreLayer = L.layerGroup();
-let wellboresEnabled = true;
 
 let WELLS_BY_API = {};
 const productionCache = {};
@@ -298,11 +305,11 @@ wellsLoaded.then(() => fetch("data/directional_lines.json"))
         // real mouse click. Stack an invisible, much wider line underneath purely for
         // click hit-testing (a standard Leaflet technique, since Canvas-rendered
         // polylines don't have a separate "hit tolerance" option from their weight).
-        const hitLine = L.polyline(path, { color, weight: 16, opacity: 0 });
+        const hitLine = L.polyline(path, { color, weight: 16, opacity: 0, pane: "wellborePane" });
         hitLine.on("click", () => showWell(api));
         hitLine.addTo(wellboreLayer);
 
-        const line = L.polyline(path, { color, weight: 2.5, opacity: 0.8, interactive: false });
+        const line = L.polyline(path, { color, weight: 2.5, opacity: 0.8, interactive: false, pane: "wellborePane" });
         line.addTo(wellboreLayer);
       }
     }

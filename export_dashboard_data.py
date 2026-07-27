@@ -70,7 +70,7 @@ DJ_BASIN_COUNTIES = {
 
 WELL_COLUMNS = [
     "api", "well_name", "well_num", "operator", "field_name", "well_class",
-    "facility_status", "spud_date", "latitude", "longitude", "max_md", "max_tvd", "hz",
+    "facility_status", "spud_date", "status_date", "latitude", "longitude", "max_md", "max_tvd", "hz",
 ]
 
 
@@ -91,7 +91,7 @@ def export_wells(conn: sqlite3.Connection) -> set:
     cur = conn.execute(
         f"""
         SELECT api, well_name, well_num, operator, field_name, well_class,
-               facility_status, spud_date, latitude, longitude, max_md, max_tvd
+               facility_status, spud_date, status_date, latitude, longitude, max_md, max_tvd
         FROM wells
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND api_county IN ({placeholders})
         """,
